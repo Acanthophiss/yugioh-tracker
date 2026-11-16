@@ -1,0 +1,6 @@
+flask
+requests
+curl_cffi
+beautifulsoup4
+apscheduler
+gunicorn

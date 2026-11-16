@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yu-Gi-Oh! Smart Portfolio Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #121212; color: #f1f1f1; }
+        .card { background-color: #1e1e1e; border: 1px solid #333; }
+        .modal-content { background-color: #1e1e1e; color: #f1f1f1; border: 1px solid #444; }
+        .table { color: #f1f1f1; }
+        .table-dark { --bs-table-bg: #1e1e1e; }
+        .badge-higher { background-color: #dc3545; color: #ffffff; }
+        .badge-lower { background-color: #198754; color: #ffffff; }
+        .card-thumb { width: 40px; height: 58px; object-fit: cover; border-radius: 4px; }
+        
+        /* Λίστα Autocomplete χωρίς μαύρα γράμματα */
+        #autocomplete-list {
+            position: absolute;
+            z-index: 1000;
+            width: 100%;
+            max-height: 320px;
+            overflow-y: auto;
+            background-color: #22252a;
+            border: 1px solid #0dcaf0;
+            border-radius: 0 0 6px 6px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.6);
+        }
+        .autocomplete-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 1px solid #343a40;
+            color: #ffffff;
+            font-weight: 500;
+        }
+        .autocomplete-item:hover {
+            background-color: #0d6efd;
+            color: #ffffff;
+            font-weight: bold;
+        }
+        .autocomplete-item img {
+            width: 30px;
+            height: 44px;
+            object-fit: cover;
+            border-radius: 3px;
+        }
+
+        /* Εικονίδιο πίσω όψης κάρτας Yu-Gi-Oh! */
+        .ygo-card-back {
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 8px;
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.8));
+        }
+
+        .edit-price-input { width: 75px !important; text-align: center; font-weight: bold; padding-left: 2px; padding-right: 2px; }
+        .edit-qty-input { width: 48px !important; text-align: center; font-weight: bold; padding-left: 2px; padding-right: 2px; }
+        .edit-alert-input { width: 48px !important; text-align: center; font-weight: bold; padding-left: 2px; padding-right: 2px; }
+        .edit-cat-select { width: 62px !important; padding-left: 4px; padding-right: 16px; }
+    </style>
+</head>
+<body>
+<div class="container-fluid px-4 py-4" style="max-width: 1600px;">
+    <!-- Header & Portfolio Summary -->
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
+        <div class="d-flex align-items-center">
+            <!-- Γραφικό Πίσω Όψης Κάρτας Yu-Gi-Oh! -->
+            <svg class="ygo-card-back" width="34" height="48" viewBox="0 0 34 48" xmlns="http://www.w3.org/2000/svg">
+                <rect x="1" y="1" width="32" height="46" rx="3" fill="#5c3317" stroke="#d4af37" stroke-width="1.5"/>
+                <rect x="4" y="4" width="26" height="40" rx="2" fill="#8b4513" stroke="#3e1f0d" stroke-width="1"/>
+                <ellipse cx="17" cy="24" rx="8" ry="13" fill="#0a0a0a" stroke="#2c1608" stroke-width="1.5"/>
+                <ellipse cx="17" cy="24" rx="4" ry="7" fill="#1a1a1a"/>
+            </svg>
+            <div>
+                <h2 class="mb-0 text-light">Yu-Gi-Oh! Smart Tracker</h2>
+                <small class="text-info">
+                    Ενεργό API: 
+                    {% if settings.provider == 'free_ygopro' %}
+                        <span class="badge bg-success text-white">Δωρεάν (YGOPRODeck Avg)</span>
+                    {% else %}
+                        <span class="badge bg-primary text-white">Custom / Paid API (Low & Avg)</span>
+                    {% endif %}
+                </small>
+            </div>
+        </div>
+
+        <div class="d-flex gap-3 bg-dark p-2 px-3 rounded border border-secondary">
+            <div><small class="text-light opacity-75 d-block">Αξία Χαρτοφυλακίου:</small><span class="fw-bold text-white fs-5">{{ '%.2f'|format(total_my) }} €</span></div>
+            <div class="border-start border-secondary ps-3"><small class="text-light opacity-75 d-block">Αξία Αγοράς (CM):</small><span class="fw-bold text-warning fs-5">{{ '%.2f'|format(total_cm) }} €</span></div>
+        </div>
+
+        <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-info fw-bold" data-bs-toggle="modal" data-bs-target="#apiSettingsModal">
+                ⚙️ Ρυθμίσεις API
+            </button>
+            <a href="/refresh" class="btn btn-warning text-white fw-bold" style="background-color: #d97706; border-color: #d97706;" onclick="this.innerText='⏳ Ενημέρωση...';">🔄 Έλεγχος Τιμών Τώρα</a>
+        </div>
+    </div>
+
+    <!-- Φόρμα Έξυπνης Προσθήκης -->
+    <div class="card p-4 mb-4">
+        <h5 class="mb-3 text-info">⚡ Γρήγορη Προσθήκη Κάρτας</h5>
+        <form action="/add" method="POST" class="row g-2">
+            <div class="col-md-3 position-relative">
+                <input type="text" id="card-name-input" name="name" class="form-control" placeholder="Γράψε 3+ γράμματα (π.χ. Ash Bloss)..." autocomplete="off" required>
+                <div id="autocomplete-list" class="d-none"></div>
+            </div>
+
+            <div class="col-md-2">
+                <select id="set-rarity-select" class="form-select" onchange="updateHiddenSetFields()">
+                    <option value="">-- Επίλεξε κάρτα --</option>
+                </select>
+                <input type="hidden" id="set_code_input" name="set_code" required>
+                <input type="hidden" id="rarity_input" name="rarity" required>
+            </div>
+
+            <div class="col-md-1">
+                <input type="number" name="quantity" value="1" min="1" class="form-control" title="Ποσότητα" placeholder="Qty" required>
+            </div>
+            <div class="col-md-2">
+                <select name="category" class="form-select" title="Κατηγορία">
+                    <option value="Πώληση">🛒 Πώληση</option>
+                    <option value="Συλλογή">💎 Συλλογή</option>
+                    <option value="Wishlist">🎯 Wishlist</option>
+                </select>
+            </div>
+            <div class="col-md-1">
+                <input type="number" step="0.01" name="my_price" class="form-control" placeholder="Τιμή €" required>
+            </div>
+            <div class="col-md-1">
+                <input type="number" step="1" name="alert_percent" value="15" class="form-control" placeholder="Alert%" title="Ποσοστό ειδοποίησης %" required>
+            </div>
+            <div class="col-md-1">
+                <input type="url" name="cm_url" class="form-control" placeholder="URL (Προαιρ.)" title="Προαιρετικό: Ακριβές link Cardmarket (π.χ. για V.1 / V.2)">
+            </div>
+            <div class="col-md-1">
+                <button type="submit" class="btn btn-primary text-white w-100 fw-bold">+ Προσθήκη</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Πίνακας Καρτών -->
+    <div class="card p-3">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5 class="mb-0 text-light">Η Λίστα μου ({{ cards|length }} κάρτες)</h5>
+            <form action="/" method="GET" class="input-group" style="max-width: 320px;">
+                <input type="text" name="q" value="{{ search }}" class="form-control form-control-sm" placeholder="Φίλτρο στη λίστα μου...">
+                <button class="btn btn-sm btn-outline-info" type="submit">🔍</button>
+                {% if search %}
+                    <a href="/" class="btn btn-sm btn-outline-secondary text-light">✕</a>
+                {% endif %}
+            </form>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-dark table-hover align-middle text-center">
+                <thead>
+                    <tr>
+                        <th>Img</th>
+                        <th class="text-start">Κάρτα</th>
+                        <th>Set Code & Rarity</th>
+                        <th>Κατ. / Qty / Alert</th>
+                        <th style="min-width: 310px;">Επεξεργασία (Τιμή | Qty | Alert | Κατ.)</th>
+                        <th>CM Low (€)</th>
+                        <th>CM Avg (€)</th>
+                        <th>TCG ($)</th>
+                        <th>Σύγκριση</th>
+                        <th style="color: #ff9800;">Τελευταίος Έλεγχος</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for card in cards %}
+                    {% set ref_price = card.cm_low if card.cm_low > 0 else card.cm_avg %}
+                    <tr>
+                        <td>
+                            {% if card.image_url %}
+                                <img src="{{ card.image_url }}" alt="" class="card-thumb">
+                            {% else %}
+                                <span class="text-light opacity-50">-</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-start"><a href="{{ card.cm_url }}" target="_blank" class="text-info text-decoration-none fw-bold">{{ card.name }}</a></td>
+                        <td>
+                            <span class="badge bg-secondary text-white">{{ card.set_code }}</span><br>
+                            <small class="text-warning fw-bold" style="font-size: 0.78rem;">{{ card.rarity }}</small>
+                        </td>
+                        <td>
+                            <span class="badge text-white {% if card.category == 'Πώληση' %}bg-success{% elif card.category == 'Συλλογή' %}bg-primary{% else %}bg-info{% endif %}">{{ card.category }}</span>
+                            <span class="badge bg-dark border border-secondary text-light">x{{ card.quantity }}</span>
+                            <span class="badge bg-secondary text-warning" title="Όριο ειδοποίησης">±{{ '%.0f'|format(card.alert_percent) }}%</span>
+                        </td>
+                        <td>
+                            <form action="/update_card/{{ card.id }}" method="POST" class="d-flex gap-1 justify-content-center align-items-center">
+                                <input type="number" step="0.01" name="my_price" value="{{ '%.2f'|format(card.my_price) }}" class="form-control form-control-sm edit-price-input" title="Τιμή (€)">
+                                <input type="number" name="quantity" value="{{ card.quantity }}" min="1" class="form-control form-control-sm edit-qty-input" title="Ποσότητα">
+                                <input type="number" step="1" name="alert_percent" value="{{ '%.0f'|format(card.alert_percent) }}" class="form-control form-control-sm edit-alert-input" title="Alert %">
+                                <input type="hidden" name="rarity" value="{{ card.rarity }}">
+                                <select name="category" class="form-select form-select-sm edit-cat-select" title="Κατηγορία">
+                                    <option value="Πώληση" {% if card.category == 'Πώληση' %}selected{% endif %}>🛒</option>
+                                    <option value="Συλλογή" {% if card.category == 'Συλλογή' %}selected{% endif %}>💎</option>
+                                    <option value="Wishlist" {% if card.category == 'Wishlist' %}selected{% endif %}>🎯</option>
+                                </select>
+                                <button type="submit" class="btn btn-sm btn-outline-light" title="Αποθήκευση">💾</button>
+                            </form>
+                        </td>
+                        <td class="fw-bold text-info">
+                            {% if card.cm_low > 0 %}{{ '%.2f'|format(card.cm_low) }} €{% else %}<span class="text-light opacity-50">-</span>{% endif %}
+                        </td>
+                        <td class="fw-bold text-warning">{{ '%.2f'|format(card.cm_avg) }} €</td>
+                        <td class="text-light">{{ '%.2f'|format(card.tcg_price) }} $</td>
+                        <td>
+                            {% if ref_price == 0 %}
+                                <span class="text-light opacity-75">Αναμονή...</span>
+                            {% elif card.my_price > ref_price %}
+                                <span class="badge badge-higher">+{{ '%.2f'|format(card.my_price - ref_price) }} € (Ακριβότερος)</span>
+                            {% else %}
+                                <span class="badge badge-lower">-{{ '%.2f'|format(ref_price - card.my_price) }} € (Φθηνότερος)</span>
+                            {% endif %}
+                        </td>
+                        <td class="small fw-bold" style="color: #ff9800;">{{ card.last_checked }}</td>
+                        <td>
+                            <a href="/delete/{{ card.id }}" class="btn btn-sm btn-danger text-white" onclick="return confirm('Σίγουρα διαγραφή;')">🗑️</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL: Ρυθμίσεις API -->
+<div class="modal fade" id="apiSettingsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header border-secondary">
+        <h5 class="modal-title text-info">⚙️ Επιλογή & Παραμετροποίηση API Τιμών</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form action="/save_settings" method="POST">
+          <div class="modal-body">
+            <div class="mb-3">
+                <label class="form-label fw-bold text-light">Επίλεξε Πηγή Δεδομένων (Provider):</label>
+                <select name="provider" id="provider-select" class="form-select" onchange="toggleCustomFields()">
+                    <option value="free_ygopro" {% if settings.provider == 'free_ygopro' %}selected{% endif %}>
+                        🟢 Δωρεάν API (YGOPRODeck - Χωρίς κλειδί, μόνο Average τιμή)
+                    </option>
+                    <option value="custom_api" {% if settings.provider == 'custom_api' %}selected{% endif %}>
+                        🔵 Custom / Paid API ή Proxy (Ακριβές Rarity, Low & Avg τιμή)
+                    </option>
+                </select>
+            </div>
+
+            <div id="custom-api-box" class="{% if settings.provider == 'free_ygopro' %}d-none{% endif %} p-3 bg-dark rounded border border-secondary">
+                <div class="mb-3">
+                    <label class="form-label text-warning fw-bold">1. API Key (Κάνε Copy-Paste το κλειδί σου):</label>
+                    <input type="text" name="api_key" value="{{ settings.api_key }}" class="form-control" placeholder="π.χ. sk_live_12345abcde...">
+                </div>
+
+                <div class="mb-2">
+                    <label class="form-label text-warning fw-bold">2. API Endpoint URL Template:</label>
+                    <input type="text" name="custom_url" value="{{ settings.custom_url }}" class="form-control">
+                    <small class="text-light opacity-75 d-block mt-2">
+                        💡 Αν χρησιμοποιείς ScrapingBee, <b>μην αλλάξεις</b> το URL Template — βάλε μόνο το API Key σου από πάνω.<br>
+                        Διαθέσιμες μεταβλητές για άλλα APIs: <code>{api_key}</code>, <code>{name}</code>, <code>{set_code}</code>, <code>{rarity}</code>, <code>{cm_url}</code>
+                    </small>
+                </div>
+            </div>
+          </div>
+          <div class="modal-footer border-secondary">
+            <button type="button" class="btn btn-secondary text-white" data-bs-dismiss="modal">Ακύρωση</button>
+            <button type="submit" class="btn btn-primary text-white fw-bold">💾 Αποθήκευση</button>
+          </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+    function toggleCustomFields() {
+        const val = document.getElementById('provider-select').value;
+        const box = document.getElementById('custom-api-box');
+        if (val === 'custom_api') {
+            box.classList.remove('d-none');
+        } else {
+            box.classList.add('d-none');
+        }
+    }
+
+    const nameInput = document.getElementById('card-name-input');
+    const listBox = document.getElementById('autocomplete-list');
+    const setSelect = document.getElementById('set-rarity-select');
+    const hiddenSetCode = document.getElementById('set_code_input');
+    const hiddenRarity = document.getElementById('rarity_input');
+
+    let timeout = null;
+
+    nameInput.addEventListener('input', function() {
+        clearTimeout(timeout);
+        const query = this.value.trim();
+        if (query.length < 3) {
+            listBox.classList.add('d-none');
+            return;
+        }
+
+        timeout = setTimeout(() => {
+            fetch(`/api/search_cards?fname=${encodeURIComponent(query)}`)
+                .then(res => res.json())
+                .then(cards => {
+                    listBox.innerHTML = '';
+                    if (cards.length === 0) {
+                        listBox.classList.add('d-none');
+                        return;
+                    }
+
+                    cards.forEach(card => {
+                        const item = document.createElement('div');
+                        item.className = 'autocomplete-item';
+                        item.innerHTML = `<img src="${card.image}" alt=""> <span>${card.name}</span>`;
+                        item.onclick = () => selectCard(card);
+                        listBox.appendChild(item);
+                    });
+                    listBox.classList.remove('d-none');
+                });
+        }, 300);
+    });
+
+    function selectCard(card) {
+        nameInput.value = card.name;
+        listBox.classList.add('d-none');
+
+        setSelect.innerHTML = '';
+        if (card.sets && card.sets.length > 0) {
+            const sortedSets = card.sets.sort((a, b) => {
+                const labelA = `${a.set_code} - ${a.set_rarity}`.toLowerCase();
+                const labelB = `${b.set_code} - ${b.set_rarity}`.toLowerCase();
+                return labelA.localeCompare(labelB);
+            });
+
+            sortedSets.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = `${s.set_code}|||${s.set_rarity}`;
+                opt.textContent = `${s.set_code} - ${s.set_rarity} (${s.set_name})`;
+                setSelect.appendChild(opt);
+            });
+            updateHiddenSetFields();
+        } else {
+            const opt = document.createElement('option');
+            opt.value = "UNKNOWN|||Common";
+            opt.textContent = "Δεν βρέθηκαν σετ (Common)";
+            setSelect.appendChild(opt);
+            updateHiddenSetFields();
+        }
+    }
+
+    function updateHiddenSetFields() {
+        const val = setSelect.value;
+        if (val && val.includes('|||')) {
+            const parts = val.split('|||');
+            hiddenSetCode.value = parts[0];
+            hiddenRarity.value = parts[1];
+        }
+    }
+
+    document.addEventListener('click', function(e) {
+        if (e.target !== nameInput) {
+            listBox.classList.add('d-none');
+        }
+    });
+</script>
+</body>
+</html>
