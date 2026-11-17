@@ -1,6 +1,8 @@
 flask
+flask-Login
 requests
 curl_cffi
 beautifulsoup4
 apscheduler
 gunicorn
+psycopg2-binary

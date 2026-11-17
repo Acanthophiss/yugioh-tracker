@@ -1,33 +1,73 @@
-import sqlite3
-import time
+import os
 import re
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime
-from flask import Flask, render_template, request, redirect, url_for, jsonify
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import requests
 from bs4 import BeautifulSoup
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
+app.secret_key = 'yugioh_super_secret_key_change_me'
 
 # ==========================================
-# ΡΥΘΜΙΣΕΙΣ ΕΙΔΟΠΟΙΗΣΕΩΝ (Συμπλήρωσε τα δικά σου)
+# ΡΥΘΜΙΣΕΙΣ ΣΥΝΔΕΣΗΣ SUPABASE (POSTGRESQL)
 # ==========================================
+DATABASE_URL = "postgresql://postgres:mL8eG-nZ7UnerZd@db.ymaqwysbwwbgwrvxdxau.supabase.co:5432/postgres"
+
+# Προαιρετικές ρυθμίσεις ειδοποιήσεων
 DISCORD_WEBHOOK_URL = ""  
-GMAIL_USER = ""           
+GMAIL_USER = ""         
 GMAIL_APP_PASSWORD = ""   
 RECEIVER_EMAIL = ""       
-# ==========================================
 
-DB_NAME = "cards.db"
+# Flask-Login Setup
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+
+class User(UserMixin):
+    def __init__(self, id, username):
+        self.id = str(id)
+        self.username = username
+
+@login_manager.user_loader
+def load_user(user_id):
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, username FROM users WHERE id = %s", (user_id,))
+    user_data = c.fetchone()
+    conn.close()
+    if user_data:
+        return User(user_data['id'], user_data['username'])
+    return None
+
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     c = conn.cursor()
+    
+    # Πίνακας Χρηστών
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+    ''')
+    
+    # Πίνακας Καρτών (συνδεδεμένος με user_id)
     c.execute('''
         CREATE TABLE IF NOT EXISTS cards (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
             name TEXT NOT NULL,
             set_code TEXT NOT NULL,
             rarity TEXT NOT NULL,
@@ -44,55 +84,40 @@ def init_db():
         )
     ''')
 
+    # Πίνακας Ρυθμίσεων API ανά χρήστη
     c.execute('''
         CREATE TABLE IF NOT EXISTS api_settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER UNIQUE REFERENCES users(id) ON DELETE CASCADE,
             provider TEXT DEFAULT 'free_ygopro',
             api_key TEXT DEFAULT '',
             custom_url TEXT DEFAULT 'https://app.scrapingbee.com/api/v1/?api_key={api_key}&url={cm_url}'
         )
     ''')
     
-    c.execute("INSERT OR IGNORE INTO api_settings (id, provider, api_key, custom_url) VALUES (1, 'free_ygopro', '', 'https://app.scrapingbee.com/api/v1/?api_key={api_key}&url={cm_url}')")
-    
     conn.commit()
     conn.close()
 
-def get_api_settings():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
+# Δημιουργία πινάκων αυτόματα στην εκκίνηση
+init_db()
+
+def get_user_api_settings(user_id):
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM api_settings WHERE id = 1")
+    c.execute("SELECT * FROM api_settings WHERE user_id = %s", (user_id,))
     settings = c.fetchone()
+    if not settings:
+        c.execute("INSERT INTO api_settings (user_id, provider, api_key, custom_url) VALUES (%s, 'free_ygopro', '', 'https://app.scrapingbee.com/api/v1/?api_key={api_key}&url={cm_url}')", (user_id,))
+        conn.commit()
+        c.execute("SELECT * FROM api_settings WHERE user_id = %s", (user_id,))
+        settings = c.fetchone()
     conn.close()
     return settings
-
-# --- ΣΥΝΑΡΤΗΣΕΙΣ ΕΙΔΟΠΟΙΗΣΕΩΝ ---
-def send_notifications(message):
-    if DISCORD_WEBHOOK_URL:
-        try:
-            requests.post(DISCORD_WEBHOOK_URL, json={"content": message})
-        except Exception as e:
-            print("Σφάλμα Discord:", e)
-
-    if GMAIL_USER and GMAIL_APP_PASSWORD and RECEIVER_EMAIL:
-        try:
-            msg = MIMEText(message)
-            msg['Subject'] = 'Yu-Gi-Oh! Ειδοποίηση Τιμής Κάρτας'
-            msg['From'] = GMAIL_USER
-            msg['To'] = RECEIVER_EMAIL
-
-            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-                server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-                server.send_message(msg)
-        except Exception as e:
-            print("Σφάλμα Email:", e)
 
 # --- ΔΩΡΕΑΝ ΛΕΙΤΟΥΡΓΙΑ (YGOPRODeck API) ---
 def fetch_from_free_api(card_name):
     try:
         clean_name = card_name.strip()
-        # Χρησιμοποιούμε requests.utils.quote για να κωδικοποιηθούν σωστά τα σύμβολα όπως το &
         encoded_name = requests.utils.quote(clean_name)
         url = f"https://db.ygoprodeck.com/api/v7/cardinfo.php?name={encoded_name}"
         response = requests.get(url, timeout=15)
@@ -118,103 +143,68 @@ def fetch_from_free_api(card_name):
         print(f"Σφάλμα Free API για {card_name}: {e}")
         return 0.0, 0.0, 0.0, ""
 
-# --- CUSTOM / PAID API ΛΕΙΤΟΥΡΓΙΑ ---
-def fetch_from_custom_api(card_name, set_code, rarity, cm_url, api_key, custom_url_template):
-    _, fallback_avg, tcg_usd, img_url = fetch_from_free_api(card_name)
-    try:
-        formatted_url = custom_url_template.format(
-            api_key=api_key.strip(),
-            name=requests.utils.quote(card_name.strip()),
-            set_code=requests.utils.quote(set_code.strip()),
-            rarity=requests.utils.quote(rarity.strip()),
-            cm_url=requests.utils.quote(cm_url.strip())
-        )
+# --- AUTH ROUTES ---
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username'].strip()
+        password = request.form['password']
         
-        response = requests.get(formatted_url, timeout=30)
-        if response.status_code != 200:
-            return 0.0, fallback_avg, tcg_usd, img_url
-
-        content_type = response.headers.get('Content-Type', '')
-        if 'application/json' in content_type:
-            data = response.json()
-            low_val = float(data.get('low', data.get('min_price', data.get('cm_low', 0.0))))
-            avg_val = float(data.get('trend', data.get('avg', data.get('average_price', data.get('price', fallback_avg)))))
-            return low_val, avg_val, tcg_usd, img_url
-        else:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            cm_low = 0.0
-            cm_avg = 0.0
-            for dt in soup.find_all('dt'):
-                label = dt.get_text(strip=True).lower()
-                dd = dt.find_next_sibling('dd')
-                if dd:
-                    text_val = dd.get_text(strip=True).replace('€', '').replace('.', '').replace(',', '.').strip()
-                    match = re.search(r'\d+(\.\d+)?', text_val)
-                    if match:
-                        val = float(match.group())
-                        if 'from' in label or 'από' in label:
-                            cm_low = val
-                        elif 'price trend' in label or 'τάση' in label:
-                            cm_avg = val
-            return cm_low, (cm_avg if cm_avg > 0 else fallback_avg), tcg_usd, img_url
-    except Exception as e:
-        print(f"Εξαίρεση Custom API: {e}")
-        return 0.0, fallback_avg, tcg_usd, img_url
-
-# --- ΕΛΕΓΧΟΣ ΟΛΩΝ ΤΩΝ ΚΑΡΤΩΝ ---
-def update_all_prices():
-    settings = get_api_settings()
-    provider = settings['provider']
-    api_key = settings['api_key']
-    custom_url = settings['custom_url']
-
-    print(f"Ξεκινάει ο έλεγχος τιμών (Λειτουργία: {provider})...")
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute("SELECT id, name, set_code, rarity, my_price, alert_percent, cm_url FROM cards")
-    cards = c.fetchall()
-
-    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
-
-    for index, card in enumerate(cards):
-        cid, name, set_code, rarity, my_price, alert_percent, cm_url = card
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE username = %s", (username,))
+        user_row = c.fetchone()
+        conn.close()
         
-        if provider == 'custom_api' and custom_url:
-            cm_low, cm_avg, tcg_usd, img_url = fetch_from_custom_api(name, set_code, rarity, cm_url, api_key, custom_url)
+        if user_row and check_password_hash(user_row['password'], password):
+            user = User(user_row['id'], user_row['username'])
+            login_user(user)
+            return redirect(url_for('index'))
         else:
-            cm_low, cm_avg, tcg_usd, img_url = fetch_from_free_api(name)
+            flash('Λάθος όνομα χρήστη ή κωδικός!', 'danger')
+            
+    return render_template('login.html')
 
-        if cm_low > 0 or cm_avg > 0 or tcg_usd > 0:
-            c.execute('''
-                UPDATE cards 
-                SET cm_low = ?, cm_avg = ?, tcg_price = ?, image_url = ?, last_checked = ?
-                WHERE id = ?
-            ''', (cm_low, cm_avg, tcg_usd, img_url, now_str, cid))
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username'].strip()
+        password = request.form['password']
+        
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT id FROM users WHERE username = %s", (username,))
+        if c.fetchone():
+            conn.close()
+            flash('Το όνομα χρήστη υπάρχει ήδη!', 'danger')
+            return redirect(url_for('register'))
+            
+        hashed_password = generate_password_hash(password)
+        c.execute("INSERT INTO users (username, password) VALUES (%s, %s) RETURNING id", (username, hashed_password))
+        user_id = c.fetchone()['id']
+        conn.commit()
+        conn.close()
+        
+        user = User(user_id, username)
+        login_user(user)
+        return redirect(url_for('index'))
+        
+    return render_template('register.html')
 
-            compare_price = cm_low if cm_low > 0 else cm_avg
-            threshold = alert_percent / 100.0
-
-            if compare_price > my_price * (1 + threshold):
-                msg = f"📈 **ΑΥΞΗΣΗ ΤΙΜΗΣ (+{alert_percent:.0f}%)!** Η κάρτα **{name} ({set_code} - {rarity})** ανέβηκε!\n• Δική σου τιμή: {my_price:.2f}€\n• Τιμή Αγοράς: {compare_price:.2f}€\n• Link: {cm_url}"
-                send_notifications(msg)
-            elif compare_price < my_price * (1 - threshold) and compare_price > 0:
-                msg = f"📉 **ΠΤΩΣΗ ΤΙΜΗΣ (-{alert_percent:.0f}%)!** Η κάρτα **{name} ({set_code} - {rarity})** έπεσε!\n• Δική σου τιμή: {my_price:.2f}€\n• Τιμή Αγοράς: {compare_price:.2f}€\n• Link: {cm_url}"
-                send_notifications(msg)
-
-        if index < len(cards) - 1:
-            time.sleep(1.0)
-
-    conn.commit()
-    conn.close()
-    print("Ο έλεγχος ολοκληρώθηκε!")
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
 
 @app.route('/api/search_cards')
+@login_required
 def api_search_cards():
     query = request.args.get('fname', '').strip()
     if len(query) < 3:
         return jsonify([])
     try:
-        url = f"https://db.ygoprodeck.com/api/v7/cardinfo.php?fname={query}&num=10&offset=0"
+        url = f"https://db.ygoprodeck.com/api/v7/cardinfo.php?fname={requests.utils.quote(query)}&num=10&offset=0"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json().get("data", [])
@@ -238,17 +228,20 @@ def api_search_cards():
     return jsonify([])
 
 @app.route('/')
+@login_required
 def index():
     search_query = request.args.get('q', '').lower()
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
+    conn = get_db_connection()
     c = conn.cursor()
     
     if search_query:
-        c.execute("SELECT * FROM cards WHERE lower(name) LIKE ? OR lower(set_code) LIKE ? OR lower(rarity) LIKE ? ORDER BY id DESC", 
-                  (f'%{search_query}%', f'%{search_query}%', f'%{search_query}%'))
+        c.execute("""
+            SELECT * FROM cards 
+            WHERE user_id = %s AND (lower(name) LIKE %s OR lower(set_code) LIKE %s OR lower(rarity) LIKE %s) 
+            ORDER BY id DESC
+        """, (current_user.id, f'%{search_query}%', f'%{search_query}%', f'%{search_query}%'))
     else:
-        c.execute("SELECT * FROM cards ORDER BY id DESC")
+        c.execute("SELECT * FROM cards WHERE user_id = %s ORDER BY id DESC", (current_user.id,))
         
     cards = c.fetchall()
 
@@ -256,23 +249,27 @@ def index():
     total_cm_value = sum((card['cm_low'] if card['cm_low'] > 0 else card['cm_avg']) * card['quantity'] for card in cards)
 
     conn.close()
-    settings = get_api_settings()
+    settings = get_user_api_settings(current_user.id)
     return render_template('index.html', cards=cards, total_my=total_my_value, total_cm=total_cm_value, search=search_query, settings=settings)
 
 @app.route('/save_settings', methods=['POST'])
+@login_required
 def save_settings():
     provider = request.form.get('provider', 'free_ygopro')
     api_key = request.form.get('api_key', '').strip()
     custom_url = request.form.get('custom_url', '').strip()
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("UPDATE api_settings SET provider = ?, api_key = ?, custom_url = ? WHERE id = 1", (provider, api_key, custom_url))
+    c.execute("""
+        UPDATE api_settings SET provider = %s, api_key = %s, custom_url = %s WHERE user_id = %s
+    """, (provider, api_key, custom_url, current_user.id))
     conn.commit()
     conn.close()
     return redirect(url_for('index'))
 
 @app.route('/add', methods=['POST'])
+@login_required
 def add_card():
     name = request.form['name']
     set_code = request.form['set_code']
@@ -287,20 +284,20 @@ def add_card():
         search_term = name.replace(' ', '+')
         cm_url = f"https://www.cardmarket.com/en/YuGiOh/Products/Search?searchString={search_term}"
 
-    # Τραβάμε απευθείας την εικόνα από το δωρεάν API κατά την προσθήκη
     _, _, _, image_url = fetch_from_free_api(name)
 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''
-        INSERT INTO cards (name, set_code, rarity, my_price, quantity, category, alert_percent, cm_url, image_url) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (name, set_code, rarity, my_price, quantity, category, alert_percent, cm_url, image_url))
+        INSERT INTO cards (user_id, name, set_code, rarity, my_price, quantity, category, alert_percent, cm_url, image_url) 
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ''', (current_user.id, name, set_code, rarity, my_price, quantity, category, alert_percent, cm_url, image_url))
     conn.commit()
     conn.close()
     return redirect(url_for('index'))
 
 @app.route('/update_card/<int:card_id>', methods=['POST'])
+@login_required
 def update_card(card_id):
     new_price = float(request.form['my_price'])
     new_qty = int(request.form['quantity'])
@@ -308,35 +305,53 @@ def update_card(card_id):
     new_rarity = request.form['rarity']
     new_alert = float(request.form['alert_percent'])
     
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute('''
         UPDATE cards 
-        SET my_price = ?, quantity = ?, category = ?, rarity = ?, alert_percent = ? 
-        WHERE id = ?
-    ''', (new_price, new_qty, new_cat, new_rarity, new_alert, card_id))
+        SET my_price = %s, quantity = %s, category = %s, rarity = %s, alert_percent = %s 
+        WHERE id = %s AND user_id = %s
+    ''', (new_price, new_qty, new_cat, new_rarity, new_alert, card_id, current_user.id))
     conn.commit()
     conn.close()
     return redirect(url_for('index'))
 
 @app.route('/delete/<int:card_id>')
+@login_required
 def delete_card(card_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+    c.execute("DELETE FROM cards WHERE id = %s AND user_id = %s", (card_id, current_user.id))
     conn.commit()
     conn.close()
     return redirect(url_for('index'))
 
 @app.route('/refresh')
+@login_required
 def manual_refresh():
-    update_all_prices()
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT id, name FROM cards WHERE user_id = %s", (current_user.id,))
+    cards = c.fetchall()
+    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    for card in cards:
+        cid, name = card['id'], card['name']
+        _, cm_avg, tcg_usd, img_url = fetch_from_free_api(name)
+
+        if cm_avg > 0 or tcg_usd > 0:
+            c.execute('''
+                UPDATE cards 
+                SET cm_avg = %s, tcg_price = %s, image_url = %s, last_checked = %s
+                WHERE id = %s AND user_id = %s
+            ''', (cm_avg, tcg_usd, img_url, now_str, cid, current_user.id))
+            
+    conn.commit()
+    conn.close()
     return redirect(url_for('index'))
 
-if __name__ == '__main__':
-    init_db()
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(func=update_all_prices, trigger="interval", hours=6)
-    scheduler.start()
-    
-    app.run(debug=False, port=5000)
+    import os
+
+    if __name__ == '__main__':
+        port = int(os.environ.get('PORT', 5000))
+        app.run(host='0.0.0.0', port=port)
