@@ -18,7 +18,7 @@ app.secret_key = 'yugioh_super_secret_key_change_me'
 # ==========================================
 # ΡΥΘΜΙΣΕΙΣ ΣΥΝΔΕΣΗΣ SUPABASE (POSTGRESQL)
 # ==========================================
-DATABASE_URL = "postgresql://postgres:mL8eG-nZ7UnerZd@db.ymaqwysbwwbgwrvxdxau.supabase.co:5432/postgres"
+DATABASE_URL = "postgresql://postgres.ymaqwysbwwbgwrvxdxau:mL8eG-nZ7UnerZd@aws-1-eu-west-1.pooler.supabase.com:6543/postgres"
 
 # Προαιρετικές ρυθμίσεις ειδοποιήσεων
 DISCORD_WEBHOOK_URL = ""  
