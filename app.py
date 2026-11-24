@@ -3,6 +3,7 @@ import re
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime
+from urllib.parse import urljoin
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -107,7 +108,10 @@ def get_user_api_settings(user_id):
     c.execute("SELECT * FROM api_settings WHERE user_id = %s", (user_id,))
     settings = c.fetchone()
     if not settings:
-        c.execute("INSERT INTO api_settings (user_id, provider, api_key, custom_url) VALUES (%s, 'free_ygopro', '', 'https://app.scrapingbee.com/api/v1/?api_key={api_key}&url={cm_url}')", (user_id,))
+        c.execute(
+            "INSERT INTO api_settings (user_id, provider, api_key, custom_url) VALUES (%s, 'free_ygopro', '', 'https://app.scrapingbee.com/api/v1/?api_key={api_key}&url={cm_url}')",
+            (user_id,)
+        )
         conn.commit()
         c.execute("SELECT * FROM api_settings WHERE user_id = %s", (user_id,))
         settings = c.fetchone()
@@ -142,6 +146,98 @@ def fetch_from_free_api(card_name):
     except Exception as e:
         print(f"Σφάλμα Free API για {card_name}: {e}")
         return 0.0, 0.0, 0.0, ""
+
+# --- CUSTOM API / SCRAPINGBEE ΛΕΙΤΟΥΡΓΙΑ ---
+def parse_eu_price(text):
+    if not text:
+        return 0.0
+    cleaned = re.sub(r'[^\d,\.]', '', text).strip()
+    if not cleaned:
+        return 0.0
+    if ',' in cleaned and '.' in cleaned:
+        cleaned = cleaned.replace('.', '').replace(',', '.')
+    elif ',' in cleaned:
+        cleaned = cleaned.replace(',', '.')
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+def build_custom_request_url(target_cm_url, card, settings):
+    api_key = settings.get('api_key', '').strip()
+    custom_url = settings.get('custom_url', '').strip()
+    if not custom_url:
+        custom_url = 'https://app.scrapingbee.com/api/v1/?api_key={api_key}&url={cm_url}'
+
+    final_url = (
+        custom_url
+        .replace('{api_key}', requests.utils.quote(api_key))
+        .replace('{cm_url}', requests.utils.quote(target_cm_url, safe=''))
+        .replace('{name}', requests.utils.quote(card['name']))
+        .replace('{set_code}', requests.utils.quote(card['set_code']))
+        .replace('{rarity}', requests.utils.quote(card['rarity']))
+    )
+
+    # Αν είναι ScrapingBee και δεν έχει οριστεί παράμετρος render_js, βάζουμε render_js=false (πολύ πιο γρήγορο και οικονομικό σε credits)
+    if 'scrapingbee.com' in final_url and 'render_js=' not in final_url:
+        separator = '&' if '?' in final_url else '?'
+        final_url += f"{separator}render_js=false"
+
+    return final_url
+
+def extract_cardmarket_prices(html_text):
+    soup = BeautifulSoup(html_text, 'html.parser')
+    cm_low = 0.0
+    cm_avg = 0.0
+
+    for dt in soup.find_all('dt'):
+        label = dt.get_text(strip=True).lower()
+        dd = dt.find_next_sibling('dd')
+        if not dd:
+            continue
+        val = parse_eu_price(dd.get_text(strip=True))
+        if label == 'from' and val > 0:
+            cm_low = val
+        elif ('price trend' in label or '30-days average' in label) and val > 0 and cm_avg == 0.0:
+            cm_avg = val
+
+    return cm_low, cm_avg, soup
+
+def fetch_from_custom_api(card, settings):
+    api_key = settings.get('api_key', '').strip()
+    if not api_key:
+        return 0.0, 0.0, None
+
+    cm_url = card['cm_url'].strip()
+    resolved_url = None
+
+    try:
+        req_url = build_custom_request_url(cm_url, card, settings)
+        resp = requests.get(req_url, timeout=35)
+        print(f"[Custom API] Card: {card['name']} | Status: {resp.status_code}")
+
+        if resp.status_code != 200:
+            print(f"[Custom API Error] {resp.text[:250]}")
+            return 0.0, 0.0, None
+
+        cm_low, cm_avg, soup = extract_cardmarket_prices(resp.text)
+
+        # Αν το link ήταν σελίδα αναζήτησης (/Search?), προσπαθούμε να βρούμε το 1ο product link
+        if cm_low == 0.0 and cm_avg == 0.0 and '/Products/Search' in cm_url:
+            product_link = soup.find('a', href=re.compile(r'/Products/Singles/'))
+            if product_link and product_link.get('href'):
+                resolved_url = urljoin('https://www.cardmarket.com', product_link['href'])
+                print(f"[Custom API] Βρέθηκε product URL: {resolved_url}")
+                req_url_2 = build_custom_request_url(resolved_url, card, settings)
+                resp_2 = requests.get(req_url_2, timeout=35)
+                if resp_2.status_code == 200:
+                    cm_low, cm_avg, _ = extract_cardmarket_prices(resp_2.text)
+
+        print(f"Custom API Result -> Low: {cm_low}€, Avg: {cm_avg}€")
+        return cm_low, cm_avg, resolved_url
+    except Exception as e:
+        print(f"Σφάλμα Custom API για {card['name']}: {e}")
+        return 0.0, 0.0, None
 
 # --- AUTH ROUTES ---
 @app.route('/login', methods=['GET', 'POST'])
@@ -331,27 +427,41 @@ def delete_card(card_id):
 def manual_refresh():
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, name FROM cards WHERE user_id = %s", (current_user.id,))
+    c.execute("SELECT * FROM cards WHERE user_id = %s", (current_user.id,))
     cards = c.fetchall()
+    settings = get_user_api_settings(current_user.id)
     now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    use_custom = (settings['provider'] == 'custom_api' and bool(settings['api_key'].strip()))
 
     for card in cards:
         cid, name = card['id'], card['name']
-        _, cm_avg, tcg_usd, img_url = fetch_from_free_api(name)
+        _, free_cm_avg, tcg_usd, img_url = fetch_from_free_api(name)
 
-        if cm_avg > 0 or tcg_usd > 0:
+        cm_low = 0.0
+        cm_avg = free_cm_avg
+        updated_url = card['cm_url']
+
+        if use_custom:
+            custom_low, custom_avg, resolved_url = fetch_from_custom_api(card, settings)
+            if custom_low > 0:
+                cm_low = custom_low
+            if custom_avg > 0:
+                cm_avg = custom_avg
+            if resolved_url:
+                updated_url = resolved_url
+
+        if cm_low > 0 or cm_avg > 0 or tcg_usd > 0:
             c.execute('''
                 UPDATE cards 
-                SET cm_avg = %s, tcg_price = %s, image_url = %s, last_checked = %s
+                SET cm_low = %s, cm_avg = %s, tcg_price = %s, image_url = %s, cm_url = %s, last_checked = %s
                 WHERE id = %s AND user_id = %s
-            ''', (cm_avg, tcg_usd, img_url, now_str, cid, current_user.id))
+            ''', (cm_low, cm_avg, tcg_usd, img_url, updated_url, now_str, cid, current_user.id))
             
     conn.commit()
     conn.close()
     return redirect(url_for('index'))
 
-    import os
-
-    if __name__ == '__main__':
-        port = int(os.environ.get('PORT', 5000))
-        app.run(host='0.0.0.0', port=port)
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
