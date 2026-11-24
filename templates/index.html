@@ -14,7 +14,7 @@
         .badge-higher { background-color: #dc3545; color: #ffffff; }
         .badge-lower { background-color: #198754; color: #ffffff; }
         .card-thumb { width: 40px; height: 58px; object-fit: cover; border-radius: 4px; }
-        
+
         /* Λίστα Autocomplete χωρίς μαύρα γράμματα */
         #autocomplete-list {
             position: absolute;
@@ -65,6 +65,19 @@
 </head>
 <body>
 <div class="container-fluid px-4 py-4" style="max-width: 1600px;">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="mb-3">
+          {% for category, message in messages %}
+            <div class="alert alert-{{ 'info' if category == 'message' else category }} alert-dismissible fade show" role="alert">
+              {{ message }}
+              <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
     <!-- Header & Portfolio Summary -->
     <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
         <div class="d-flex align-items-center">
@@ -78,11 +91,11 @@
             <div>
                 <h2 class="mb-0 text-light">Yu-Gi-Oh! Smart Tracker</h2>
                 <small class="text-info">
-                    Ενεργό API: 
+                    Ενεργό API:
                     {% if settings.provider == 'free_ygopro' %}
                         <span class="badge bg-success text-white">Δωρεάν (YGOPRODeck Avg)</span>
                     {% else %}
-                        <span class="badge bg-primary text-white">Custom / Paid API (Low & Avg)</span>
+                        <span class="badge bg-primary text-white">Custom / Paid API ({{ settings.max_workers or 5 }}x παράλληλα)</span>
                     {% endif %}
                 </small>
             </div>
@@ -94,13 +107,12 @@
         </div>
 
         <div class="d-flex gap-2">
-            <button type="button" class="btn btn-outline-info fw-bold" data-bs-toggle="modal" data-bs-target="#apiSettingsModal">Ρυθμίσεις API
-            </button>
-            <a href="/refresh" class="btn btn-warning text-white fw-bold" style="background-color: #d97706; border-color: #d97706;" onclick="this.innerText='⏳ Ενημέρωση...';">Έλεγχος Τιμών Τώρα</a>
-			<a href="{{ url_for('logout') }}" class="btn btn-warning text-white fw-bold" >Αποσύνδεση</a>
+            <button type="button" class="btn btn-outline-info fw-bold" data-bs-toggle="modal" data-bs-target="#apiSettingsModal">Ρυθμίσεις API</button>
+            <a href="/refresh" class="btn btn-warning text-white fw-bold" style="background-color: #d97706; border-color: #d97706;" onclick="this.innerText='⏳ Εκκίνηση...';">Έλεγχος Τιμών Τώρα</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-warning text-white fw-bold">Αποσύνδεση</a>
         </div>
     </div>
-	
+
     <!-- Φόρμα Έξυπνης Προσθήκης -->
     <div class="card p-4 mb-4">
         <h5 class="mb-3 text-info">Προσθήκη Κάρτας</h5>
@@ -164,13 +176,13 @@
                         <th class="text-start">Κάρτα</th>
                         <th>Set Code & Rarity</th>
                         <th>Κατ. / Qty / Alert</th>
-                        <th style="min-width: 310px;">Επεξεργασία (Τιμή | Qty | Alert | Κατ.)</th>
+                        <th style="min-width: 310px;">Γρήγορη Επεξεργασία (Τιμή | Qty | Alert | Κατ.)</th>
                         <th>CM Low (€)</th>
+                        <th>GR Low (€)</th>
                         <th>CM Avg (€)</th>
-                        <th>TCG ($)</th>
                         <th>Σύγκριση</th>
                         <th style="color: #ff9800;">Τελευταίος Έλεγχος</th>
-                        <th></th>
+                        <th style="min-width: 115px;">Ενέργειες</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -184,7 +196,9 @@
                                 <span class="text-light opacity-50">-</span>
                             {% endif %}
                         </td>
-                        <td class="text-start"><a href="{{ card.cm_url }}" target="_blank" class="text-info text-decoration-none fw-bold">{{ card.name }}</a></td>
+                        <td class="text-start">
+                            <a href="{{ card.cm_url }}" target="_blank" class="text-info text-decoration-none fw-bold">{{ card.name }}</a>
+                        </td>
                         <td>
                             <span class="badge bg-secondary text-white">{{ card.set_code }}</span><br>
                             <small class="text-warning fw-bold" style="font-size: 0.78rem;">{{ card.rarity }}</small>
@@ -196,10 +210,13 @@
                         </td>
                         <td>
                             <form action="/update_card/{{ card.id }}" method="POST" class="d-flex gap-1 justify-content-center align-items-center">
+                                <input type="hidden" name="name" value="{{ card.name }}">
+                                <input type="hidden" name="set_code" value="{{ card.set_code }}">
+                                <input type="hidden" name="rarity" value="{{ card.rarity }}">
+                                <input type="hidden" name="cm_url" value="{{ card.cm_url }}">
                                 <input type="number" step="0.01" name="my_price" value="{{ '%.2f'|format(card.my_price) }}" class="form-control form-control-sm edit-price-input" title="Τιμή (€)">
                                 <input type="number" name="quantity" value="{{ card.quantity }}" min="1" class="form-control form-control-sm edit-qty-input" title="Ποσότητα">
                                 <input type="number" step="1" name="alert_percent" value="{{ '%.0f'|format(card.alert_percent) }}" class="form-control form-control-sm edit-alert-input" title="Alert %">
-                                <input type="hidden" name="rarity" value="{{ card.rarity }}">
                                 <select name="category" class="form-select form-select-sm edit-cat-select" title="Κατηγορία">
                                     <option value="Πώληση" {% if card.category == 'Πώληση' %}selected{% endif %}>🛒</option>
                                     <option value="Συλλογή" {% if card.category == 'Συλλογή' %}selected{% endif %}>💎</option>
@@ -211,8 +228,10 @@
                         <td class="fw-bold text-info">
                             {% if card.cm_low > 0 %}{{ '%.2f'|format(card.cm_low) }} €{% else %}<span class="text-light opacity-50">-</span>{% endif %}
                         </td>
+                        <td class="fw-bold text-success">
+                            {% if card.gr_low and card.gr_low > 0 %}{{ '%.2f'|format(card.gr_low) }} €{% else %}<span class="text-light opacity-50">-</span>{% endif %}
+                        </td>
                         <td class="fw-bold text-warning">{{ '%.2f'|format(card.cm_avg) }} €</td>
-                        <td class="text-light">{{ '%.2f'|format(card.tcg_price) }} $</td>
                         <td>
                             {% if ref_price == 0 %}
                                 <span class="text-light opacity-75">Αναμονή...</span>
@@ -224,7 +243,24 @@
                         </td>
                         <td class="small fw-bold" style="color: #ff9800;">{{ card.last_checked }}</td>
                         <td>
-                            <a href="/delete/{{ card.id }}" class="btn btn-sm btn-danger text-white" onclick="return confirm('Σίγουρα διαγραφή;')">🗑️</a>
+                            <div class="d-flex gap-1 justify-content-center">
+                                <a href="{{ url_for('refresh_single', card_id=card.id) }}" class="btn btn-sm btn-outline-info" title="Ανανέωση μόνο αυτής της κάρτας" onclick="this.innerText='⏳';">🔄</a>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-warning edit-card-btn"
+                                        title="Πλήρης επεξεργασία (Set Code, Rarity, Custom URL)"
+                                        data-bs-toggle="modal"
+                                        data-bs-target="#editCardModal"
+                                        data-id="{{ card.id }}"
+                                        data-name="{{ card.name|e }}"
+                                        data-set-code="{{ card.set_code|e }}"
+                                        data-rarity="{{ card.rarity|e }}"
+                                        data-my-price="{{ '%.2f'|format(card.my_price) }}"
+                                        data-quantity="{{ card.quantity }}"
+                                        data-category="{{ card.category|e }}"
+                                        data-alert-percent="{{ '%.0f'|format(card.alert_percent) }}"
+                                        data-cm-url="{{ card.cm_url|e }}">✏️</button>
+                                <a href="/delete/{{ card.id }}" class="btn btn-sm btn-danger text-white" title="Διαγραφή" onclick="return confirm('Σίγουρα διαγραφή;')">🗑️</a>
+                            </div>
                         </td>
                     </tr>
                     {% endfor %}
@@ -232,6 +268,64 @@
             </table>
         </div>
     </div>
+</div>
+
+<!-- MODAL: Πλήρης Επεξεργασία Κάρτας -->
+<div class="modal fade" id="editCardModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header border-secondary">
+        <h5 class="modal-title text-warning">✏️ Επεξεργασία Κάρτας</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <form id="edit-card-form" method="POST">
+          <div class="modal-body">
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <label class="form-label text-light">Όνομα Κάρτας</label>
+                    <input type="text" id="edit-name" name="name" class="form-control" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label text-light">Set Code</label>
+                    <input type="text" id="edit-set-code" name="set_code" class="form-control" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label text-light">Rarity</label>
+                    <input type="text" id="edit-rarity" name="rarity" class="form-control" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label text-light">Τιμή (€)</label>
+                    <input type="number" step="0.01" id="edit-my-price" name="my_price" class="form-control" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label text-light">Ποσότητα (Qty)</label>
+                    <input type="number" min="1" id="edit-quantity" name="quantity" class="form-control" required>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label text-light">Κατηγορία</label>
+                    <select id="edit-category" name="category" class="form-select">
+                        <option value="Πώληση">🛒 Πώληση</option>
+                        <option value="Συλλογή">💎 Συλλογή</option>
+                        <option value="Wishlist">🎯 Wishlist</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label text-light">Alert (%)</label>
+                    <input type="number" step="1" id="edit-alert-percent" name="alert_percent" class="form-control" required>
+                </div>
+                <div class="col-12">
+                    <label class="form-label text-info fw-bold">Cardmarket Custom URL</label>
+                    <input type="url" id="edit-cm-url" name="cm_url" class="form-control" placeholder="https://www.cardmarket.com/en/YuGiOh/Products/Singles/...">
+                </div>
+            </div>
+          </div>
+          <div class="modal-footer border-secondary">
+            <button type="button" class="btn btn-secondary text-white" data-bs-dismiss="modal">Ακύρωση</button>
+            <button type="submit" class="btn btn-warning text-dark fw-bold">💾 Αποθήκευση Αλλαγών</button>
+          </div>
+      </form>
+    </div>
+  </div>
 </div>
 
 <!-- MODAL: Ρυθμίσεις API -->
@@ -251,7 +345,7 @@
                         🟢 Δωρεάν API (YGOPRODeck - Χωρίς κλειδί, μόνο Average τιμή)
                     </option>
                     <option value="custom_api" {% if settings.provider == 'custom_api' %}selected{% endif %}>
-                        🔵 Custom / Paid API ή Proxy (Ακριβές Rarity, Low & Avg τιμή)
+                        🔵 Custom / Paid API ή Proxy (Ακριβές Rarity, Low, GR Low & Avg τιμή)
                     </option>
                 </select>
             </div>
@@ -262,12 +356,20 @@
                     <input type="text" name="api_key" value="{{ settings.api_key }}" class="form-control" placeholder="π.χ. sk_live_12345abcde...">
                 </div>
 
-                <div class="mb-2">
+                <div class="mb-3">
                     <label class="form-label text-warning fw-bold">2. API Endpoint URL Template:</label>
                     <input type="text" name="custom_url" value="{{ settings.custom_url }}" class="form-control">
                     <small class="text-light opacity-75 d-block mt-2">
-                        💡 Αν χρησιμοποιείς ScrapingBee, <b>μην αλλάξεις</b> το URL Template — βάλε μόνο το API Key σου από πάνω.<br>
-                        Διαθέσιμες μεταβλητές για άλλα APIs: <code>{api_key}</code>, <code>{name}</code>, <code>{set_code}</code>, <code>{rarity}</code>, <code>{cm_url}</code>
+                        💡 Για ScrapingBee στο Cardmarket χρησιμοποιείται συνήθως <code>render_js=true&premium_proxy=true</code>.<br>
+                        Διαθέσιμες μεταβλητές: <code>{api_key}</code>, <code>{name}</code>, <code>{set_code}</code>, <code>{rarity}</code>, <code>{cm_url}</code>
+                    </small>
+                </div>
+
+                <div class="mb-2">
+                    <label class="form-label text-info fw-bold">3. Ταυτόχρονες Αναζητήσεις (Max Concurrent Requests):</label>
+                    <input type="number" name="max_workers" min="1" max="10" value="{{ settings.max_workers or 5 }}" class="form-control" style="max-width: 140px;">
+                    <small class="text-light opacity-75 d-block mt-1">
+                        Προεπιλογή: <b>5</b>. Ρύθμισέ το ανάλογα με το όριο ταυτόχρονων κλήσεων του πλάνου σου (ScrapingBee / proxy).
                     </small>
                 </div>
             </div>
@@ -293,6 +395,22 @@
             box.classList.add('d-none');
         }
     }
+
+    // Γέμισμα Modal Επεξεργασίας Κάρτας
+    document.querySelectorAll('.edit-card-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            const cardId = this.getAttribute('data-id');
+            document.getElementById('edit-card-form').action = `/update_card/${cardId}`;
+            document.getElementById('edit-name').value = this.getAttribute('data-name') || '';
+            document.getElementById('edit-set-code').value = this.getAttribute('data-set-code') || '';
+            document.getElementById('edit-rarity').value = this.getAttribute('data-rarity') || '';
+            document.getElementById('edit-my-price').value = this.getAttribute('data-my-price') || '0.00';
+            document.getElementById('edit-quantity').value = this.getAttribute('data-quantity') || '1';
+            document.getElementById('edit-category').value = this.getAttribute('data-category') || 'Πώληση';
+            document.getElementById('edit-alert-percent').value = this.getAttribute('data-alert-percent') || '15';
+            document.getElementById('edit-cm-url').value = this.getAttribute('data-cm-url') || '';
+        });
+    });
 
     const nameInput = document.getElementById('card-name-input');
     const listBox = document.getElementById('autocomplete-list');
