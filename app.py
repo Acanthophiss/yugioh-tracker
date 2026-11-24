@@ -190,12 +190,17 @@ def extract_cardmarket_prices(html_text):
     cm_low = 0.0
     cm_avg = 0.0
 
+    page_title = soup.title.get_text(strip=True) if soup.title else 'NO TITLE'
+    print(f"[DEBUG CM HTML] Page Title: {page_title} | HTML length: {len(html_text)}")
+
     for dt in soup.find_all('dt'):
         label = dt.get_text(strip=True).lower()
         dd = dt.find_next_sibling('dd')
+        dd_text = dd.get_text(strip=True) if dd else 'NONE'
+        print(f"[DEBUG CM DT] '{label}' -> '{dd_text}'")
         if not dd:
             continue
-        val = parse_eu_price(dd.get_text(strip=True))
+        val = parse_eu_price(dd_text)
         if label == 'from' and val > 0:
             cm_low = val
         elif ('price trend' in label or '30-days average' in label) and val > 0 and cm_avg == 0.0:
