@@ -218,7 +218,7 @@ def fetch_from_custom_api(card, settings):
 
     try:
         req_url = build_custom_request_url(cm_url, card, settings)
-        resp = requests.get(req_url, timeout=35)
+        resp = requests.get(req_url, timeout=90)
         print(f"[Custom API] Card: {card['name']} | Status: {resp.status_code}")
 
         if resp.status_code != 200:
